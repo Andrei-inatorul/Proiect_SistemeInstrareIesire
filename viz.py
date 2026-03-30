@@ -1,53 +1,15 @@
-# from pathlib import Path
-# import matplotlib.pyplot as plt
-# import numpy as np
-# from numpy import correlate
-#
-# data = []
-# data2 = []
-# with open("A5.txt", "r") as txtFile:
-#     txt = txtFile.read()
-#     print(txt)
-#     txt = txt.split(", ")
-#     txt.pop(-1)
-#     data.extend(map(int, txt))
-#
-# with open("A6.txt", "r") as txtFile:
-#     txt = txtFile.read()
-#     print(txt)
-#     txt = txt.split(", ")
-#     txt.pop(-1)
-#     data2.extend(map(int, txt))
-#
-# def alpha_filter(data, alpha=0.1):
-#     filtered_data = np.zeros_like(data)
-#     filtered_data[0] = data[0]
-#     for i in range(1, len(data)):
-#         filtered_data[i] = alpha * data[i] + (1 - alpha) * filtered_data[i - 1]
-#     return filtered_data
-#
-#
-# data = alpha_filter(data)
-# data2 = alpha_filter(data2)
-#
-# plt.subplot(3, 2, 1)
-# plt.plot(data[1000:3000])
-# plt.subplot(3, 2, 2)
-# plt.plot(data2[1000:3000])
-# plt.subplot(3, 2, 3)
-# A = plt.imread("A.png")
-# plt.imshow(A)
-# plt.subplot(3, 2, 4)
-# A2 = plt.imread("A2.png")
-# plt.imshow(A2)
-# plt.show()
 from pathlib import Path
 import numpy as np
+
+import serial
+import time
 
 filesDir = Path("./rec")
 alphas = [0.2, 0.2, 0.2, 1.0]
 colors = ["red", "green", "blue", "black"]
 import matplotlib.pyplot as plt
+
+import pickle
 
 def alpha_filter(data, alpha=0.1):
     filtered_data = np.zeros_like(data)
@@ -60,38 +22,37 @@ def normalize(data):
     data = np.array(data, dtype=np.float64)
     return (data - np.mean(data)) / np.std(data)
 
-
-def find_best_template_with_confidence(main_signal, templates, names):
-    scores = []
-
-    # Standardize the main signal once to save processing time
-    sig_norm = (main_signal - np.mean(main_signal)) / np.std(main_signal)
-
-    for template in templates:
-        # Standardize template
-        temp_norm = (template - np.mean(template)) / np.std(template)
-
-        # Cross-correlation
-        correlation = np.correlate(sig_norm, temp_norm, mode='valid') / len(template)
-        scores.append(np.max(correlation))
-
-    scores = np.array(scores)
-    best_idx = np.argmax(scores)
-    best_score = scores[best_idx]
-
-    # Confidence Logic: How much better is the winner than the others?
-    # We use a simple softmax-style normalization or a relative ratio
-    other_scores = np.delete(scores, best_idx)
-    avg_others = np.mean(other_scores)
-
-    # Confidence is the lead the winner has over the average 'noise'
-    confidence = (best_score - avg_others) / (1 - avg_others) * 100
-
-    return {
-        "vowel": names[best_idx],
-        "score": round(best_score, 3),
-        "confidence": f"{max(0, min(100, confidence)):.1f}%"
-    }
+# def find_best_template_with_confidence(main_signal, templates, names):
+#     scores = []
+#
+#     # Standardize the main signal once to save processing time
+#     sig_norm = (main_signal - np.mean(main_signal)) / np.std(main_signal)
+#
+#     for template in templates:
+#         # Standardize template
+#         temp_norm = (template - np.mean(template)) / np.std(template)
+#
+#         # Cross-correlation
+#         correlation = np.correlate(sig_norm, temp_norm, mode='valid') / len(template)
+#         scores.append(np.max(correlation))
+#
+#     scores = np.array(scores)
+#     best_idx = np.argmax(scores)
+#     best_score = scores[best_idx]
+#
+#     # Confidence Logic: How much better is the winner than the others?
+#     # We use a simple softmax-style normalization or a relative ratio
+#     other_scores = np.delete(scores, best_idx)
+#     avg_others = np.mean(other_scores)
+#
+#     # Confidence is the lead the winner has over the average 'noise'
+#     confidence = (best_score - avg_others) / (1 - avg_others) * 100
+#
+#     return {
+#         "vowel": names[best_idx],
+#         "score": round(best_score, 3),
+#         "confidence": f"{max(0, min(100, confidence)):.1f}%"
+#     }
 
 def get_template(sig, s1, s2, s3, per, title="", afis = 4):
     sig1 = sig[s1:s1 + per]
@@ -146,15 +107,7 @@ for file in Path(filesDir).rglob('*.txt'):
         sig = temp
 
 signals = [A, E, I, O, U]
-
-# for i, s in enumerate(signals):
-#     plt.subplot(len(signals), 1, i+1)
-#     plt.plot(s[12000:13000])
 plt.figure()
-# A1 = A[10022:10441]
-# perA = 10441- 10022
-# A2 = A[5130+260:(5130+260+perA)]
-# A3 = A[24739:24739+perA]
 
 plt.subplot(6, 1, 1)
 A_template = get_template(A, 5670+150, 10022, 24739, 419, "A")
@@ -167,24 +120,48 @@ O_template = get_template(O, 5670+150+215, 10022+150+92, 24739+150, 390, "O")
 plt.subplot(6, 1, 5)
 U_template = get_template(U, 5670+270, 10022, 24739, 373, "U")
 plt.subplot(6, 1, 6)
-plt.plot(sig)
 
 vocala = ["A", "E", "I", "O", "U"]
 templates = [A_template, E_template, I_template, O_template, U_template]
 
-sig = np.array(sig, dtype=np.float64)
-result = find_best_template_with_confidence(sig, templates, vocala)
+with open('templates.pkl', 'wb') as file:
+    pickle.dump(templates, file)
 
+sig_array = np.array(sig, dtype=np.float64)
 scores = []
-sig_norm = (sig - np.mean(sig)) / np.std(sig)
 
 for i, t in enumerate(templates):
     t_norm = (t - np.mean(t)) / np.std(t)
-    corr = np.correlate(sig_norm, t_norm, mode='valid') / len(t)
-    max_val = np.max(np.abs(corr)) # Use ABS to ignore phase flips
+    window_size = len(t_norm)
+
+    if len(sig_array) < window_size:
+        scores.append(0)
+        continue
+
+    # fereastra glisanta
+    windows = np.lib.stride_tricks.sliding_window_view(sig_array, window_size)
+
+    # normalizare locala
+    windows_mean = np.mean(windows, axis=1, keepdims=True)
+    windows_std = np.std(windows, axis=1, keepdims=True)
+    windows_std[windows_std == 0] = 1e-10
+    windows_norm = (windows - windows_mean) / windows_std
+
+    # calculare corelatie pt toate ferestrele
+    corrs = np.dot(windows_norm, t_norm) / window_size
+
+    max_val = np.max(np.abs(corrs))
     scores.append(max_val)
-    print(f"Vowel {vocala[i]}: Max Similarity = {max_val:.4f}")
+    print(f"Vocala {vocala[i]}: Similaritate maxima = {max_val:.4f}")
 
 best_idx = np.argmax(scores)
-print(f"Prediction: {vocala[best_idx]}")
+best_score = scores[best_idx]
+
+other_scores = np.delete(scores, best_idx)
+avg_others = np.mean(other_scores)
+
+print("-" * 30)
+print(f"Predictie: {vocala[best_idx]}")
+print("-" * 30)
+
 plt.show()
