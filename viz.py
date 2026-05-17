@@ -4,12 +4,19 @@ import numpy as np
 import serial
 import time
 
-filesDir = Path("./rec")
+SAMPLE_RATE = 44100
+FFT_WINDOW = 1024
+MAX_FREQ = 4500
+
+filesDir = Path("./recordings")
 alphas = [0.2, 0.2, 0.2, 1.0]
 colors = ["red", "green", "blue", "black"]
 import matplotlib.pyplot as plt
 
 import pickle
+
+freqs = np.fft.rfftfreq(FFT_WINDOW, 1 / SAMPLE_RATE)
+n_bins = np.searchsorted(freqs, MAX_FREQ)
 
 def alpha_filter(data, alpha=0.1):
     filtered_data = np.zeros_like(data)
@@ -21,6 +28,23 @@ def alpha_filter(data, alpha=0.1):
 def normalize(data):
     data = np.array(data, dtype=np.float64)
     return (data - np.mean(data)) / np.std(data)
+
+def spectru(segment):
+    segment = np.array(segment, dtype=np.float64)
+    segment = segment - np.mean(segment)
+    # pre-emphasis: x[n] - 0.97*x[n-1] amplifica frecventele inalte si face F2 mai vizibil
+    segment = np.append(segment[0], segment[1:] - 0.97 * segment[:-1])
+    mag = np.abs(np.fft.rfft(segment, n=FFT_WINDOW))[:n_bins]
+    return mag / (np.linalg.norm(mag) + 1e-10)
+
+def spectru_medio(sig):
+    # media spectrelor din jumatatea de mijloc a inregistrarii (evita tranzitii)
+    start = len(sig) // 4
+    end = 3 * len(sig) // 4
+    specs = []
+    for i in range(start, end - FFT_WINDOW, FFT_WINDOW // 2):
+        specs.append(spectru(sig[i:i + FFT_WINDOW]))
+    return np.mean(specs, axis=0)
 
 # def find_best_template_with_confidence(main_signal, templates, names):
 #     scores = []
@@ -54,114 +78,106 @@ def normalize(data):
 #         "confidence": f"{max(0, min(100, confidence)):.1f}%"
 #     }
 
-def get_template(sig, s1, s2, s3, per, title="", afis = 4):
-    sig1 = sig[s1:s1 + per]
-    sig2 = sig[s2:s2 + per]
-    sig3 = sig[s3:s3 + per]
-
-    sig1 = normalize(sig1)
-    sig2 = normalize(sig2)
-    sig3 = normalize(sig3)
+def get_template(sig1, sig2, sig3, title="", afis = 4):
+    spec1 = spectru_medio(sig1)
+    spec2 = spectru_medio(sig2)
+    spec3 = spectru_medio(sig3)
 
     plt.title(f"{title}")
     if afis >= 1:
-        plt.plot(sig1, "r-", alpha=0.5)
+        plt.plot(freqs[:n_bins], spec1, "r-", alpha=0.5)
     if afis >= 2:
-        plt.plot(sig2, "g-", alpha=0.5)
+        plt.plot(freqs[:n_bins], spec2, "g-", alpha=0.5)
     if afis >= 3:
-        plt.plot(sig3, "b-", alpha=0.5)
+        plt.plot(freqs[:n_bins], spec3, "b-", alpha=0.5)
 
-    sig_template = np.mean([sig1, sig2, sig3], axis=0)
-    sig_template = alpha_filter(sig_template, 0.5)
+    spec_template = np.mean([spec1, spec2, spec3], axis=0)
     if(afis >= 4):
-        plt.plot(sig_template, "black", alpha=1.0, linewidth=3.0)
-    return sig_template
+        plt.plot(freqs[:n_bins], spec_template, "black", alpha=1.0, linewidth=3.0)
+    return spec_template
 
-A = []
-E = []
-I = []
-O = []
-U = []
+vowels_data = {"A": [], "E": [], "I": [], "O": [], "U": []}
 sig = []
 
-for file in Path(filesDir).rglob('*.txt'):
+for file in sorted(Path(filesDir).rglob('*.txt')):
     fn = file.name.removesuffix(".txt")
-    litera = fn[0]
     temp = []
     with file.open() as txtFile:
         txt = txtFile.read()
         txt = txt.split(", ")
         txt.pop(-1)
         temp.extend(map(int, txt))
-    if litera == "A":
-        A.extend(temp)
-    elif litera == "E":
-        E.extend(temp)
-    elif litera == "I":
-        I.extend(temp)
-    elif litera == "O":
-        O.extend(temp)
-    elif litera == "U":
-        U.extend(temp)
-    else:
+    litera = fn[0]
+    if litera in vowels_data and len(fn) == 2 and fn[1].isdigit():
+        vowels_data[litera].append(temp)
+    elif fn == "sig":
         sig = temp
+
+A, E, I, O, U = [vowels_data[v] for v in "AEIOU"]
 
 signals = [A, E, I, O, U]
 plt.figure()
 
 plt.subplot(6, 1, 1)
-A_template = get_template(A, 5670+150, 10022, 24739, 419, "A")
+A_template = get_template(*A, "A")
+plt.xlabel("Frecventa (Hz)")
 plt.subplot(6, 1, 2)
-E_template = get_template(E, 5270, 10110, 20214, 385, "E")
+E_template = get_template(*E, "E")
+plt.xlabel("Frecventa (Hz)")
 plt.subplot(6, 1, 3)
-I_template = get_template(I, 5270+61, 10110+150+97, 20214+241+97, 340, "I")
+I_template = get_template(*I, "I")
+plt.xlabel("Frecventa (Hz)")
 plt.subplot(6, 1, 4)
-O_template = get_template(O, 5670+150+215, 10022+150+92, 24739+150, 390, "O")
+O_template = get_template(*O, "O")
+plt.xlabel("Frecventa (Hz)")
 plt.subplot(6, 1, 5)
-U_template = get_template(U, 5670+270, 10022, 24739, 373, "U")
+U_template = get_template(*U, "U")
+plt.xlabel("Frecventa (Hz)")
 plt.subplot(6, 1, 6)
 
 vocala = ["A", "E", "I", "O", "U"]
 templates = [A_template, E_template, I_template, O_template, U_template]
 
+# normalizeaza per banda: fiecare bin FFT e impartit la media lui peste toate templateurile
+# reduce dominanta benzilor cu energie mare (joase frecvente) fata de formante
+band_mean = np.mean(templates, axis=0)
+band_mean[band_mean == 0] = 1e-10
+templates = [t / band_mean for t in templates]
+templates = [t / (np.linalg.norm(t) + 1e-10) for t in templates]
+
 with open('templates.pkl', 'wb') as file:
-    pickle.dump(templates, file)
+    pickle.dump((templates, band_mean), file)
 
 sig_array = np.array(sig, dtype=np.float64)
 scores = []
 
-for i, t in enumerate(templates):
-    t_norm = (t - np.mean(t)) / np.std(t)
-    window_size = len(t_norm)
+if len(sig_array) >= FFT_WINDOW:
+    step = 256
+    windows = np.lib.stride_tricks.sliding_window_view(sig_array, FFT_WINDOW)[::step]
 
-    if len(sig_array) < window_size:
-        scores.append(0)
-        continue
+    # eliminare DC si FFT pe toate ferestrele odata
+    specs = np.abs(np.fft.rfft(windows - np.mean(windows, axis=1, keepdims=True), axis=1))[:, :n_bins]
+    # aplica aceeasi normalizare per banda ca la template-uri
+    specs = specs / band_mean
+    norms = np.linalg.norm(specs, axis=1, keepdims=True)
+    norms[norms == 0] = 1e-10
+    specs_norm = specs / norms
 
-    # fereastra glisanta
-    windows = np.lib.stride_tricks.sliding_window_view(sig_array, window_size)
+    for i, t in enumerate(templates):
+        # similaritate cosinus fata de template spectral
+        corrs = specs_norm @ t
+        max_val = np.max(corrs)
+        scores.append(max_val)
+        print(f"Vocala {vocala[i]}: Similaritate maxima = {max_val:.4f}")
 
-    # normalizare locala
-    windows_mean = np.mean(windows, axis=1, keepdims=True)
-    windows_std = np.std(windows, axis=1, keepdims=True)
-    windows_std[windows_std == 0] = 1e-10
-    windows_norm = (windows - windows_mean) / windows_std
+    best_idx = np.argmax(scores)
+    best_score = scores[best_idx]
 
-    # calculare corelatie pt toate ferestrele
-    corrs = np.dot(windows_norm, t_norm) / window_size
+    other_scores = np.delete(scores, best_idx)
+    avg_others = np.mean(other_scores)
 
-    max_val = np.max(np.abs(corrs))
-    scores.append(max_val)
-    print(f"Vocala {vocala[i]}: Similaritate maxima = {max_val:.4f}")
-
-best_idx = np.argmax(scores)
-best_score = scores[best_idx]
-
-other_scores = np.delete(scores, best_idx)
-avg_others = np.mean(other_scores)
-
-print("-" * 30)
-print(f"Predictie: {vocala[best_idx]}")
-print("-" * 30)
+    print("-" * 30)
+    print(f"Predictie: {vocala[best_idx]}")
+    print("-" * 30)
 
 plt.show()
